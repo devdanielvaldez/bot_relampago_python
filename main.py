@@ -68,17 +68,17 @@ active_conversations = {}
 # Lista de repartidores disponibles
 DRIVERS = [
     {"code": "R-36", "name": "DRIVER R-36", "fullName": "Vairon Ramirez", "phone": "18098624984", "hourIn": "08:00 AM",
-     "hourOut": "04:00 PM"},
+     "hourOut": "16:00 PM"},
     {"code": "R-09", "name": "DRIVER R-09", "fullName": "Robert Francisco", "phone": "18094966093",
-     "hourIn": "04:00 PM", "hourOut": "11:30 PM"},
-    {"code": "R-27", "name": "DRIVER R-27", "fullName": "Robert Jr.", "phone": "18097790282", "hourIn": "04:00 PM",
-     "hourOut": "11:30 PM"},
+     "hourIn": "16:00 PM", "hourOut": "23:30 PM"},
+    {"code": "R-27", "name": "DRIVER R-27", "fullName": "Robert Jr.", "phone": "18097790282", "hourIn": "16:00 PM",
+     "hourOut": "23:30 PM"},
     {"code": "R-45", "name": "DRIVER R-45", "fullName": "Genesis", "phone": "18498611022", "hourIn": "08:00 AM",
-     "hourOut": "11:30 PM"},
+     "hourOut": "23:30 PM"},
     {"code": "R-54", "name": "DRIVER R-54", "fullName": "Jolizon", "phone": "18495277731", "hourIn": "09:00 AM",
-     "hourOut": "09:00 PM"},
+     "hourOut": "21:00 PM"},
     {"code": "R-72", "name": "DRIVER R-72", "fullName": "Jose De La Cruz", "phone": "18096325833", "hourIn": "08:00 AM",
-     "hourOut": "11:30 PM"},
+     "hourOut": "23:30 PM"},
 ]
 
 
