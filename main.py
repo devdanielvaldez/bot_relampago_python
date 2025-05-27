@@ -54,31 +54,26 @@ AWAITING_PACKAGE_VALUE = "awaiting_package_value"
 AWAITING_PICKUP_CONFIRMATION = "awaiting_pickup_confirmation"
 
 # Estados de pedidos
-STATUS_PENDING = "pending"
-STATUS_CONFIRMED = "confirmed"
-STATUS_PREPARING = "preparing"
-STATUS_DELIVERING = "delivering"
-STATUS_COMPLETED = "completed"
-STATUS_REJECTED = "rejected"
-STATUS_CANCELLED = "cancelled"
+STATUS_PENDING = "pending"  # Pendiente, sin asignar
+STATUS_ASSIGNED = "assigned"  # Asignado a un repartidor pero no confirmado
+STATUS_CONFIRMED = "confirmed"  # Confirmado por el repartidor
+STATUS_PREPARING = "preparing"  # En preparación
+STATUS_DELIVERING = "delivering"  # En camino para entrega
+STATUS_COMPLETED = "completed"  # Completado
+STATUS_REJECTED = "rejected"  # Rechazado
+STATUS_CANCELLED = "cancelled"  # Cancelado
 
 # Estructura para almacenar conversaciones en curso (temporal)
 active_conversations = {}
 
 # Lista de repartidores disponibles
 DRIVERS = [
-    {"code": "R-36", "name": "DRIVER R-36", "fullName": "Vairon Ramirez", "phone": "18098624984", "hourIn": "08:00 AM",
-     "hourOut": "16:00 PM"},
-    {"code": "R-09", "name": "DRIVER R-09", "fullName": "Robert Francisco", "phone": "18094966093",
-     "hourIn": "16:00 PM", "hourOut": "23:30 PM"},
-    {"code": "R-27", "name": "DRIVER R-27", "fullName": "Robert Jr.", "phone": "18097790282", "hourIn": "16:00 PM",
-     "hourOut": "23:30 PM"},
-    {"code": "R-45", "name": "DRIVER R-45", "fullName": "Genesis", "phone": "18498611022", "hourIn": "08:00 AM",
-     "hourOut": "23:30 PM"},
-    {"code": "R-54", "name": "DRIVER R-54", "fullName": "Jolizon", "phone": "18495277731", "hourIn": "09:00 AM",
-     "hourOut": "21:00 PM"},
-    {"code": "R-72", "name": "DRIVER R-72", "fullName": "Jose De La Cruz", "phone": "18096325833", "hourIn": "08:00 AM",
-     "hourOut": "23:30 PM"},
+    {"code": "R-36", "name": "DRIVER R-36", "fullName": "Vairon Ramirez", "phone": "18098624984"},
+    {"code": "R-09", "name": "DRIVER R-09", "fullName": "Robert Francisco", "phone": "18094966093"},
+    {"code": "R-27", "name": "DRIVER R-27", "fullName": "Robert Jr.", "phone": "18097790282"},
+    {"code": "R-45", "name": "DRIVER R-45", "fullName": "Genesis", "phone": "18498611022"},
+    {"code": "R-54", "name": "DRIVER R-54", "fullName": "Jolizon", "phone": "18495277731"},
+    {"code": "R-72", "name": "DRIVER R-72", "fullName": "Jose De La Cruz", "phone": "18096325833"},
 ]
 
 
@@ -140,8 +135,6 @@ def init_db():
         code TEXT PRIMARY KEY,
         name TEXT NOT NULL,
         phone TEXT NOT NULL,
-        hourIn TEXT NOT NULL,
-        hourOut TEXT NOT NULL,
         active_orders INTEGER DEFAULT 0,
         total_orders INTEGER DEFAULT 0,
         available BOOLEAN DEFAULT 1
@@ -201,9 +194,9 @@ def init_db():
     # Insertar o actualizar los repartidores predefinidos
     for driver in DRIVERS:
         cursor.execute('''
-        INSERT OR REPLACE INTO drivers (code, name, phone, hourIn, hourOut, active_orders, total_orders, available)
-        VALUES (?, ?, ?, ?, ?, 0, 0, 1)
-        ''', (driver["code"], driver["name"], driver["phone"], driver["hourIn"], driver["hourOut"]))
+        INSERT OR REPLACE INTO drivers (code, name, phone, active_orders, total_orders, available)
+        VALUES (?, ?, ?, 0, 0, 1)
+        ''', (driver["code"], driver["name"], driver["phone"]))
 
     conn.commit()
     conn.close()
@@ -288,24 +281,8 @@ def load_conversation_state(phone):
     return None, None
 
 
-def is_driver_available(driver):
-    """Verifica si un conductor está disponible en función de su horario."""
-    now = datetime.now()
-    current_time = now.time()
-
-    # Convertir las horas de inicio y fin del conductor a objetos de tiempo
-    start_time = datetime.strptime(driver["hourIn"], "%I:%M %p").time()
-    end_time = datetime.strptime(driver["hourOut"], "%I:%M %p").time()
-
-    # Verificar si la hora actual está dentro del rango de disponibilidad del conductor
-    if start_time <= end_time:
-        return start_time <= current_time <= end_time
-    else:  # El horario cruza la medianoche
-        return current_time >= start_time or current_time <= end_time
-
-
-def get_available_driver():
-    """Selecciona un repartidor disponible según su horario y carga de trabajo."""
+def get_all_available_drivers():
+    """Obtiene todos los repartidores disponibles para asignar un pedido."""
     conn = get_db_connection()
     cursor = conn.cursor()
 
@@ -314,18 +291,66 @@ def get_available_driver():
     available_drivers = cursor.fetchall()
     conn.close()
 
-    available_drivers = [dict(driver) for driver in available_drivers]
+    return [dict(driver) for driver in available_drivers]
 
-    # Filtrar conductores que están dentro de su horario laboral
-    available_drivers = [
-        driver for driver in available_drivers if is_driver_available(driver)
-    ]
 
-    if not available_drivers:
-        return None
+def broadcast_order_to_drivers(order_id):
+    """Envía una notificación a todos los repartidores disponibles sobre un nuevo pedido."""
+    drivers = get_all_available_drivers()
+    if not drivers:
+        return False
 
-    # Seleccionar repartidor con menos cargas primero (ya están ordenados)
-    return available_drivers[0] if available_drivers else None
+    # Obtener detalles del pedido
+    order = get_order(order_id)
+    if not order:
+        return False
+
+    success = False
+    for driver in drivers:
+        if order["type"] == "client_delivery":
+            driver_message = f"""
+*🚨 NUEVO PEDIDO DISPONIBLE #{order_id}*
+------------------
+Cliente: {order["customer_name"]}
+Dirección: {order["customer_address"]}
+Restaurant: {order["restaurant_name"]}
+
+Detalles:
+{order["order_details"]}
+------------------
+Para tomar este pedido, responde:
+*#tomar {order_id}*
+"""
+        else:  # business_pickup
+            driver_message = f"""
+*🚨 NUEVO PICKUP DISPONIBLE #{order_id}*
+------------------
+Recoger en: {order["restaurant_name"]}
+Dirección recogida: {order["restaurant_address"]}
+
+Entregar a: {order["customer_address"]}
+Descripción: {order["order_details"]}
+
+Valor: ${order["order_amount"]}
+Total: ${order["total_amount"]}
+------------------
+Para tomar este pedido, responde:
+*#tomar {order_id}*
+"""
+        # Enviar mensaje al repartidor
+        if forward_to_whatsapp(driver["phone"], driver_message, order_id):
+            success = True
+
+        # Si hay coordenadas, enviar también la ubicación
+        if "latitude" in order and order["latitude"] and "longitude" in order and order["longitude"]:
+            forward_location_to_driver(
+                driver["phone"],
+                order["latitude"],
+                order["longitude"],
+                order_id
+            )
+
+    return success
 
 
 def assign_driver_to_order(order_id, driver_code):
@@ -333,20 +358,32 @@ def assign_driver_to_order(order_id, driver_code):
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # Verificar si el pedido ya tiene un repartidor asignado
-    cursor.execute("SELECT driver_code FROM orders WHERE order_id = ?", (order_id,))
-    current_assignment = cursor.fetchone()
+    # Verificar si el pedido existe y no tiene un repartidor asignado o está disponible
+    cursor.execute("SELECT * FROM orders WHERE order_id = ?", (order_id,))
+    order = cursor.fetchone()
 
-    if current_assignment and current_assignment["driver_code"]:
+    if not order:
+        conn.close()
+        return None
+
+    # Si el pedido ya tiene un repartidor asignado y es el mismo, no hacemos nada
+    if order["driver_code"] == driver_code and order["status"] != STATUS_PENDING:
+        cursor.execute("SELECT * FROM drivers WHERE code = ?", (driver_code,))
+        driver = cursor.fetchone()
+        conn.close()
+        return {"driver": dict(driver) if driver else None, "order": dict(order)}
+
+    # Si el pedido tiene asignado otro repartidor, debemos cancelar esa asignación
+    if order["driver_code"] and order["driver_code"] != driver_code:
         # Decrementar el contador del repartidor anterior
         cursor.execute('''
         UPDATE drivers 
         SET active_orders = active_orders - 1
         WHERE code = ?
-        ''', (current_assignment["driver_code"],))
+        ''', (order["driver_code"],))
 
     # Actualizar el pedido con el código del repartidor
-    cursor.execute("UPDATE orders SET driver_code = ?, status = ? WHERE order_id = ?",
+    cursor.execute("UPDATE orders SET driver_code = ?, status = ?, updated_at = CURRENT_TIMESTAMP WHERE order_id = ?",
                    (driver_code, STATUS_CONFIRMED, order_id))
 
     # Incrementar el contador de pedidos activos y totales del repartidor
@@ -356,6 +393,17 @@ def assign_driver_to_order(order_id, driver_code):
     WHERE code = ?
     ''', (driver_code,))
 
+    # Insertar actualización de estado
+    cursor.execute('''
+    INSERT INTO status_updates (update_id, order_id, status, notes)
+    VALUES (?, ?, ?, ?)
+    ''', (
+        generate_short_uuid("upd"),
+        order_id,
+        STATUS_CONFIRMED,
+        f"Pedido asignado al repartidor {driver_code}"
+    ))
+
     conn.commit()
 
     # Obtener información actualizada del repartidor
@@ -364,11 +412,11 @@ def assign_driver_to_order(order_id, driver_code):
 
     # Obtener información del pedido
     cursor.execute("SELECT * FROM orders WHERE order_id = ?", (order_id,))
-    order = cursor.fetchone()
+    updated_order = cursor.fetchone()
 
     conn.close()
 
-    return {"driver": dict(driver) if driver else None, "order": dict(order) if order else None}
+    return {"driver": dict(driver) if driver else None, "order": dict(updated_order) if updated_order else None}
 
 
 def mark_order_completed(order_id, driver_code):
@@ -633,6 +681,23 @@ def get_driver_orders(driver_code):
     return [dict(order) for order in orders]
 
 
+def get_pending_orders():
+    """Obtiene todos los pedidos pendientes sin asignar a un repartidor."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    cursor.execute('''
+    SELECT * FROM orders 
+    WHERE status = ? AND (driver_code IS NULL OR driver_code = '')
+    ORDER BY created_at ASC
+    ''', (STATUS_PENDING,))
+
+    orders = cursor.fetchall()
+    conn.close()
+
+    return [dict(order) for order in orders]
+
+
 def forward_to_whatsapp(to_number: str, message: str, order_id: str = None):
     try:
         whatsapp_url = f"{WHATSAPP_SERVICE_URL}/forward-message"
@@ -696,6 +761,14 @@ def is_valid_phone_number(phone):
     return 8 <= len(phone) <= 15
 
 
+def check_if_driver(phone_number):
+    """Verifica si un número de teléfono pertenece a un repartidor registrado."""
+    for driver in DRIVERS:
+        if driver["phone"] == phone_number:
+            return driver
+    return None
+
+
 # Endpoint para recibir ubicaciones
 @app.post("/location")
 async def receive_location(data: LocationData):
@@ -756,7 +829,7 @@ async def receive_location(data: LocationData):
             }
         elif state == AWAITING_PICKUP_ADDRESS:
             conversation["data"]["pickup_address_type"] = "location"
-            conversation["state"] = AWAITING_BUSINESS_CONTACT
+            conversation["state"] = AWAITING_CUSTOMER_DELIVERY_ADDRESS
 
             # También guardar una referencia textual por si acaso
             conversation["data"]["pickup_address"] = f"Ubicación compartida: {data.latitude}, {data.longitude}"
@@ -766,7 +839,7 @@ async def receive_location(data: LocationData):
             save_conversation_state(phone, conversation["state"], conversation["data"])
 
             return {
-                "answer": "📍 He recibido tu ubicación para recoger el pedido. Ahora necesito un número de contacto del establecimiento."
+                "answer": "📍 He recibido tu ubicación para recoger el pedido. Ahora necesito la dirección donde debemos entregar el paquete. Puedes escribirla o compartir otra ubicación."
             }
 
     # Si no hay conversación activa o no estamos esperando una dirección
@@ -794,20 +867,78 @@ async def chat(request: ChatRequest):
             "answer": "🔄 *Proceso reiniciado*. ¡Bienvenido a *Relámpago Express*! ¿Cómo puedo ayudarte hoy?\n\n1️⃣ Escribe *\"1\"* o *\"Cliente\"* si deseas solicitar un envío\n2️⃣ Escribe *\"2\"* o *\"Establecimiento\"* si necesitas que recojamos algo para enviar"
         }
 
-    # Continúa el código anterior...
+    # === COMANDOS PARA REPARTIDORES ===
+    driver = check_if_driver(phone)
 
-    # Comandos para repartidores
-    if message.startswith("#p ") or message.startswith("#c ") or message.startswith("#m ") or message.startswith("$"):
+    # Comando para aceptar un pedido
+    if message.startswith("#tomar ") and driver:
+        order_id = message.replace("#tomar ", "").strip()
+        result = assign_driver_to_order(order_id, driver["code"])
+
+        if not result or not result.get("order"):
+            return {
+                "answer": f"❌ No se pudo asignar el pedido {order_id}. Posiblemente ya fue tomado por otro repartidor o no existe."
+            }
+
+        order = result["order"]
+
+        # Notificar al cliente o establecimiento que su pedido fue tomado
+        if order["type"] == "client_delivery":
+            customer_message = f"""
+*🛵 PEDIDO CONFIRMADO - RELÁMPAGO EXPRESS*
+------------------
+¡Buenas noticias! Tu pedido #{order_id} ha sido tomado por {driver["name"]}.
+El repartidor se dirigirá a recoger tu pedido en {order["restaurant_name"]}.
+
+Te notificaremos cuando el repartidor esté en camino a tu dirección.
+------------------
+"""
+            forward_to_whatsapp(order["customer_phone"], customer_message)
+        else:  # business_pickup
+            business_message = f"""
+*🛵 SERVICIO CONFIRMADO - RELÁMPAGO EXPRESS*
+------------------
+¡Buenas noticias! Tu solicitud de recogida #{order_id} ha sido tomada por {driver["name"]}.
+El repartidor se dirigirá pronto a {order["restaurant_address"]} para recoger el paquete.
+
+Te notificaremos cuando el pedido sea entregado a su destino.
+------------------
+"""
+            forward_to_whatsapp(order["restaurant_phone"], business_message)
+
+        return {
+            "answer": f"""
+✅ *¡Has tomado el pedido #{order_id}!*
+------------------
+Detalles del pedido:
+• Tipo: {order["type"]}
+• Cliente/Establecimiento: {order["type"] == "client_delivery" and order["customer_name"] or order["restaurant_name"]}
+• {order["type"] == "client_delivery" and f"Restaurant: {order['restaurant_name']}" or f"Cliente destino: {order['customer_address']}"}
+
+Acciones disponibles:
+• Para actualizar precio: $ID MONTO o #p ID MONTO
+• Para marcar entregado: #c ID
+• Para ver tus pedidos: #pedidos
+"""
+        }
+
+    # Comandos para actualizar precio, completar y ver pedidos
+    if (message.startswith("#p ") or message.startswith("#c ") or message.startswith("#m ") or
+        message.startswith("$") or message.startswith("#tomar")) and driver:
+
         # Extraer el comando y los parámetros
         if message.startswith("$"):
             # Formato simplificado: $ID MONTO
             parts = message[1:].split()
             command_type = "#p"  # Por defecto es precio
+        elif message.startswith("#tomar"):
+            parts = message.split(" ")
+            command_type = "#tomar"
         else:
             parts = message.split(" ")
             command_type = parts[0].lower()
 
-        if len(parts) >= 2:
+        if len(parts) >= 2 or (command_type == "#tomar" and len(parts) >= 2):
             try:
                 order_id = parts[0] if message.startswith("$") else parts[1]
                 # Limpiar posibles caracteres adicionales
@@ -818,16 +949,8 @@ async def chat(request: ChatRequest):
                     amount_text = parts[1] if message.startswith("$") else parts[2]
                     amount = float(amount_text.replace("$", "").strip())
 
-                    # Verificar si es un repartidor registrado
-                    repartidor = next((d for d in DRIVERS if d["phone"] == phone), None)
-
-                    if not repartidor:
-                        return {
-                            "answer": "⚠️ No estás registrado como repartidor en el sistema."
-                        }
-
                     # Actualizar monto del pedido
-                    updated_order = update_order_amount(order_id, amount, repartidor["code"])
+                    updated_order = update_order_amount(order_id, amount, driver["code"])
 
                     if not updated_order:
                         return {
@@ -856,16 +979,8 @@ Tu pedido está en camino. Gracias por tu paciencia.
 
                 # Para comandos de completar/entregar
                 elif command_type in ["#co", "#en", "#c"]:
-                    # Verificar si es un repartidor registrado
-                    repartidor = next((d for d in DRIVERS if d["phone"] == phone), None)
-
-                    if not repartidor:
-                        return {
-                            "answer": "⚠️ No estás registrado como repartidor en el sistema."
-                        }
-
                     # Marcar el pedido como completado
-                    completed_order = mark_order_completed(order_id, repartidor["code"])
+                    completed_order = mark_order_completed(order_id, driver["code"])
 
                     if not completed_order:
                         return {
@@ -903,34 +1018,51 @@ Esperamos volver a servirte pronto.
                     }
                 else:
                     return {
-                        "answer": "⚠️ Comando no reconocido. Formatos válidos:\n- Actualizar precio: #p ID MONTO o $ID MONTO\n- Marcar entregado: #c ID"
+                        "answer": "⚠️ Comando no reconocido. Formatos válidos:\n- Actualizar precio: #p ID MONTO o $ID MONTO\n- Marcar entregado: #c ID\n- Tomar pedido: #tomar ID"
                     }
 
             except ValueError:
                 return {
-                    "answer": "⚠️ Formato incorrecto. Usa:\n- Actualizar precio: #p ID MONTO o $ID MONTO\n- Marcar entregado: #c ID"
+                    "answer": "⚠️ Formato incorrecto. Usa:\n- Actualizar precio: #p ID MONTO o $ID MONTO\n- Marcar entregado: #c ID\n- Tomar pedido: #tomar ID"
                 }
         else:
             return {
-                "answer": "⚠️ Faltan parámetros. Usa:\n- Actualizar precio: #p ID MONTO o $ID MONTO\n- Marcar entregado: #c ID"
+                "answer": "⚠️ Faltan parámetros. Usa:\n- Actualizar precio: #p ID MONTO o $ID MONTO\n- Marcar entregado: #c ID\n- Tomar pedido: #tomar ID"
             }
 
     # Ver pedidos asignados para un repartidor
-    if message in ["#mispedidos", "#pedidos", "#p"]:
-        # Verificar si es un repartidor registrado
-        repartidor = next((d for d in DRIVERS if d["phone"] == phone), None)
-
-        if not repartidor:
-            return {
-                "answer": "⚠️ No estás registrado como repartidor en el sistema."
-            }
-
+    if (message in ["#mispedidos", "#pedidos", "#p"]) and driver:
         # Obtener pedidos activos del repartidor
-        orders = get_driver_orders(repartidor["code"])
+        orders = get_driver_orders(driver["code"])
 
         if not orders:
+            # Si no hay pedidos activos, mostrar pedidos pendientes disponibles
+            pending = get_pending_orders()
+
+            if not pending:
+                return {
+                    "answer": "📋 No tienes pedidos activos en este momento y no hay pedidos pendientes disponibles."
+                }
+
+            # Mostrar lista de pedidos pendientes
+            pending_list = ""
+            for order in pending[:5]:  # Limitamos a 5 para no saturar el mensaje
+                pending_list += f"""
+• *#{order['order_id']}* - {order['type']}
+  {order['type'] == 'client_delivery' and 'Cliente' or 'Establecimiento'}: {order['type'] == 'client_delivery' and order['customer_name'] or order['restaurant_name']}
+  {order['type'] == 'client_delivery' and f"Restaurant: {order['restaurant_name']}" or f"Entrega a: {order['customer_address'][:30]}..."}
+"""
+
+            message = f"""
+*📋 NO TIENES PEDIDOS ACTIVOS*
+------------------
+Pero hay {len(pending)} pedidos pendientes disponibles:
+{pending_list}
+------------------
+Para tomar un pedido: #tomar ID
+"""
             return {
-                "answer": "📋 No tienes pedidos activos en este momento."
+                "answer": message
             }
 
         # Mostrar lista de pedidos de forma concisa
@@ -938,22 +1070,56 @@ Esperamos volver a servirte pronto.
         for order in orders:
             orders_list += f"""
 • *#{order['order_id']}* - {order['status']}
-  Cliente: {order['customer_name'] or 'Sin nombre'}
-  Dirección: {order['customer_address'][:30]}...
+  {order['type'] == 'client_delivery' and 'Cliente' or 'Establecimiento'}: {order['type'] == 'client_delivery' and (order['customer_name'] or 'Sin nombre') or order['restaurant_name']}
+  {order['type'] == 'client_delivery' and f"Restaurant: {order['restaurant_name']}" or f"Dirección: {order['customer_address'][:30]}..."}
 """
-            if order['type'] == 'client_delivery':
-                orders_list += f"  Recoger en: {order['restaurant_name']}\n"
+
+        # Obtener pedidos pendientes disponibles
+        pending = get_pending_orders()
+        pending_info = f"\nHay {len(pending)} pedidos pendientes disponibles. Usa #tomar ID para aceptarlos." if pending else ""
+
         message = f"""
 *📋 TUS PEDIDOS ACTIVOS*
 {orders_list}
 ------------------
-Para actualizar precio: $ID MONTO
-Para marcar entregado: #c ID
+Acciones:
+• Para actualizar precio: $ID MONTO
+• Para marcar entregado: #c ID
+{pending_info}
 """
         return {
             "answer": message
         }
 
+    # Ver todos los pedidos pendientes para un repartidor
+    if message in ["#pendientes", "#disponibles"] and driver:
+        pending = get_pending_orders()
+
+        if not pending:
+            return {
+                "answer": "📋 No hay pedidos pendientes disponibles en este momento."
+            }
+
+        # Mostrar lista de pedidos pendientes
+        pending_list = ""
+        for order in pending[:8]:  # Limitamos a 8 para no saturar el mensaje
+            pending_list += f"""
+• *#{order['order_id']}* - {order['type']}
+  {order['type'] == 'client_delivery' and 'Cliente' or 'Establecimiento'}: {order['type'] == 'client_delivery' and order['customer_name'] or order['restaurant_name']}
+  {order['type'] == 'client_delivery' and f"Restaurant: {order['restaurant_name']}" or f"Entrega a: {order['customer_address'][:30]}..."}
+"""
+
+        message = f"""
+*📋 PEDIDOS DISPONIBLES ({len(pending)})*
+{pending_list}
+------------------
+Para tomar un pedido: #tomar ID
+"""
+        return {
+            "answer": message
+        }
+
+    # === FLUJO NORMAL DE CONVERSACIÓN ===
     # Inicializar conversación si no existe o cargar desde DB
     if phone not in active_conversations:
         # Intentar cargar desde la base de datos
@@ -1274,18 +1440,6 @@ Total: ${package_value + delivery_fee}
 
             save_conversation_state(phone, conversation["state"], conversation["data"])
 
-            # Asignar un repartidor disponible
-            driver = get_available_driver()
-            if not driver:
-                # No hay repartidores disponibles
-                return {
-                    "answer": """
-❌ *Lo sentimos, no hay repartidores disponibles en este momento*
-
-Todos nuestros repartidores están ocupados o fuera de horario. Por favor, intenta de nuevo más tarde.
-"""
-                }
-
             # Formato del mensaje según el tipo de pedido
             if order_data.get("mode") == "cliente":
                 # Guardar/actualizar información del cliente en la base de datos
@@ -1315,44 +1469,15 @@ Todos nuestros repartidores están ocupados o fuera de horario. Por favor, inten
                     "order_amount": 0,  # Será definido por el repartidor
                     "delivery_fee": DELIVERY_FEE,
                     "total_amount": DELIVERY_FEE,  # Inicialmente solo el costo de envío
-                    "status": STATUS_CONFIRMED,  # Confirmado directamente
-                    "driver_code": driver["code"]
+                    "status": STATUS_PENDING,
+                    "driver_code": None  # No asignamos repartidor inicialmente
                 }
 
                 # Guardar en la base de datos
                 insert_order(db_order)
 
-                # Actualizar contador del repartidor
-                assign_driver_to_order(order_id, driver["code"])
-
-                # Notificar al repartidor del nuevo pedido
-                driver_message = f"""
-*🛵 NUEVO PEDIDO #{order_id}*
-------------------
-Cliente: {order_data["customer_name"]}
-Teléfono: {phone}
-Dirección: {order_data["customer_address"]}
-Restaurant: {order_data["restaurant_name"]}
-
-Detalles:
-{order_data["order_details"]}
-------------------
-*Acciones rápidas:*
-• Actualizar precio: $ID MONTO
-• Marcar entregado: #c ID
-• Ver pedidos: #p
-"""
-                # Enviar mensaje al repartidor
-                forward_to_whatsapp(driver["phone"], driver_message, order_id)
-
-                # Si hay coordenadas, enviar también la ubicación
-                if "latitude" in order_data and "longitude" in order_data:
-                    forward_location_to_driver(
-                        driver["phone"],
-                        order_data["latitude"],
-                        order_data["longitude"],
-                        order_id
-                    )
+                # Notificar a todos los repartidores disponibles
+                broadcast_success = broadcast_order_to_drivers(order_id)
 
                 # Preguntar si quiere hacer otro pedido
                 conversation["state"] = AWAITING_MORE_ORDERS
@@ -1362,9 +1487,9 @@ Detalles:
                     "answer": f"""
 ✅ *¡Pedido confirmado!*
 Tu número de pedido: *{order_id}*
-Repartidor asignado: {driver["name"]}
 
-Te notificaremos cuando el repartidor actualice el costo de tu orden y esté en camino.
+Tu pedido ha sido notificado a nuestros repartidores disponibles.
+Uno de ellos lo tomará y te notificaremos cuando lo haga.
 
 ¿Deseas hacer otro pedido?
 1️⃣ Responde *"Sí"* para hacer otro pedido
@@ -1400,53 +1525,15 @@ Te notificaremos cuando el repartidor actualice el costo de tu orden y esté en 
                     "order_amount": order_data["package_value"],
                     "delivery_fee": DELIVERY_FEE,
                     "total_amount": order_data["package_value"] + DELIVERY_FEE,
-                    "status": STATUS_CONFIRMED,
-                    "driver_code": driver["code"]
+                    "status": STATUS_PENDING,
+                    "driver_code": None  # No asignamos repartidor inicialmente
                 }
 
                 # Guardar en la base de datos
                 insert_order(db_order)
 
-                # Actualizar contador del repartidor
-                assign_driver_to_order(order_id, driver["code"])
-
-                # Notificar al repartidor del nuevo pedido
-                driver_message = f"""
-*🛵 NUEVO PICKUP #{order_id}*
-------------------
-Recoger en: {order_data["business_name"]}
-Dirección recogida: {order_data["pickup_address"]}
-Contacto: {phone}
-
-Entregar a: {order_data["customer_address"]}
-Contacto cliente: {order_data["customer_phone"]}
-Descripción: {order_data["package_description"]}
-
-Valor: ${order_data["package_value"]}
-Total: ${order_data["package_value"] + DELIVERY_FEE}
-------------------
-*Acciones rápidas:*
-• Marcar entregado: #c {order_id}
-• Ver pedidos: #p
-"""
-                # Enviar mensaje al repartidor
-                forward_to_whatsapp(driver["phone"], driver_message, order_id)
-
-                # Si hay coordenadas, enviar también la ubicación
-                if "restaurant_latitude" in order_data and "restaurant_longitude" in order_data:
-                    forward_location_to_driver(
-                        driver["phone"],
-                        order_data["restaurant_latitude"],
-                        order_data["restaurant_longitude"],
-                        order_id
-                    )
-                if "latitude" in order_data and "longitude" in order_data:
-                    forward_location_to_driver(
-                        driver["phone"],
-                        order_data["latitude"],
-                        order_data["longitude"],
-                        order_id
-                    )
+                # Notificar a todos los repartidores disponibles
+                broadcast_success = broadcast_order_to_drivers(order_id)
 
                 # Preguntar si quiere hacer otro pedido
                 conversation["state"] = AWAITING_MORE_ORDERS
@@ -1456,10 +1543,10 @@ Total: ${order_data["package_value"] + DELIVERY_FEE}
                     "answer": f"""
 ✅ *¡Servicio confirmado!*
 Referencia: *{order_id}*
-Repartidor asignado: {driver["name"]}
 
-Pronto pasará un repartidor a recoger el pedido.
-Te notificaremos cuando sea entregado.
+Tu solicitud ha sido notificada a nuestros repartidores disponibles.
+Uno de ellos la tomará y pasará a recoger el pedido pronto.
+Te notificaremos cuando sea asignado y cuando sea entregado.
 
 ¿Deseas solicitar otro servicio?
 1️⃣ Responde *"Sí"* para solicitar otro servicio
@@ -1527,7 +1614,7 @@ Te notificaremos cuando sea entregado.
                         "answer": "📝 Iniciemos tu nueva solicitud. Por favor, indica el nombre de tu establecimiento."
                     }
         else:
-            # Finalizar proceso pero mantener datos del usuario
+            # Finalizar proceso pero mantener datos del usuario para futuras interacciones
             user_data = conversation["data"].get("user", None)
             conversation["state"] = AWAITING_START
             conversation["data"] = {}
@@ -2003,6 +2090,7 @@ async def health_check():
 
 # Inicialización de drivers como diccionario para acceso rápido
 DRIVERS_DICT = {driver["code"]: driver for driver in DRIVERS}
+
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8080)
